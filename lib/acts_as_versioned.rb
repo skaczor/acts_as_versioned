@@ -179,18 +179,12 @@ module ActiveRecord #:nodoc:
         self.non_versioned_columns        = [self.primary_key, inheritance_column, self.version_column, 'lock_version', versioned_inheritance_column] + options[:non_versioned_columns].to_a.map(&:to_s)
         self.version_association_options  = {
                                                     :class_name  => "#{self.to_s}::#{versioned_class_name}",
-                                                    :foreign_key => versioned_foreign_key,
-                                                    :dependent   => :delete_all
+                                                    :foreign_key => versioned_foreign_key
         }.merge(options[:association_options] || {})
+        # Delete history items unless using paranoid
+        self.version_association_options[:dependent] = :delete_all unless self.respond_to?(:find_with_destroyed)
 
-        if block_given?
-          extension_module_name = "#{versioned_class_name}Extension"
-          silence_warnings do
-            self.const_set(extension_module_name, Module.new(&extension))
-          end
-
-          options[:extend] = self.const_get(extension_module_name)
-        end
+        options[:extend] = create_version_extension_modules(versioned_class_name, extension, options[:extend])
 
         unless options[:if_changed].nil?
           self.track_altered_attributes = true
@@ -198,7 +192,10 @@ module ActiveRecord #:nodoc:
           self.version_if_changed = options[:if_changed].map(&:to_s)
         end
 
-        include options[:extend] if options[:extend].is_a?(Module)
+        options[:extend].each do |mod|
+          include mod
+        end
+
 
         include ActiveRecord::Acts::Versioned::Behaviors
 
@@ -243,7 +240,7 @@ module ActiveRecord #:nodoc:
           end
 
           def versions_count
-            page.version
+            self.version
           end
         end
 
@@ -253,9 +250,25 @@ module ActiveRecord #:nodoc:
         versioned_class.belongs_to self.to_s.demodulize.underscore.to_sym,
                                    :class_name  => "::#{self.to_s}",
                                    :foreign_key => versioned_foreign_key
-        versioned_class.send :include, options[:extend] if options[:extend].is_a?(Module)
+        options[:extend].each do |mod|
+          versioned_class.send :include, mod
+        end
         versioned_class.set_sequence_name version_sequence_name if version_sequence_name
       end
+
+      def create_version_extension_modules(name, block_extension, extensions)
+        if block_extension
+          extension_module_name = "#{self.to_s.demodulize}#{name.to_s.camelize}Extension"
+
+          silence_warnings do
+            self.const_set(extension_module_name, Module.new(&block_extension))
+          end
+          Array(extensions).push(extension_module_name.constantize)
+        else
+          Array(extensions)
+        end
+      end
+
 
       module Behaviors
         extend ActiveSupport::Concern
